@@ -1,12 +1,13 @@
 ﻿using Lucene.Net.Analysis.Standard;
 using Lucene.Net.Index;
+using Lucene.Net.Index.Extensions;
 using Lucene.Net.IndexProvider.Interfaces;
 using Lucene.Net.IndexProvider.Models;
 using Lucene.Net.Search;
+using Lucene.Net.Store;
 using System;
 using System.Collections.Generic;
 using System.Threading;
-using Lucene.Net.Index.Extensions;
 
 namespace Lucene.Net.IndexProvider.Managers;
 
@@ -29,8 +30,12 @@ public class IndexSessionManager : IIndexSessionManager
     private readonly Lazy<Dictionary<string, ManualResetEventSlim>> _sessionLocks =
         new(() => new Dictionary<string, ManualResetEventSlim>(StringComparer.OrdinalIgnoreCase));
 
+    private readonly Lazy<Dictionary<string, IList<Directory>>> _shardDirectories =
+        new(() => new Dictionary<string, IList<Directory>>(StringComparer.OrdinalIgnoreCase));
+
     public IDictionary<string, LuceneSession> ContextSessions => _contextSessions.Value;
     private IDictionary<string, ManualResetEventSlim> SessionLocks => _sessionLocks.Value;
+    private IDictionary<string, IList<Directory>> ShardDirectories => _shardDirectories.Value;
 
     public LuceneSession GetSessionFrom(string indexName)
     {
@@ -73,6 +78,21 @@ public class IndexSessionManager : IIndexSessionManager
                 SearcherManager = searchManager
             };
 
+            if (config.WriterCount > 1)
+            {
+                var shardDirs = new List<Directory>(config.WriterCount);
+                for (int i = 0; i < config.WriterCount; i++)
+                {
+                    string shardName = GetShardIndexName(indexName, i);
+                    var shardDirectory = _directoryManager.GetDirectory(shardName);
+                    var shardConfig = new IndexWriterConfig(config.LuceneVersion, new StandardAnalyzer(config.LuceneVersion));
+                    shardConfig.SetWriteLockTimeout(config.WriteLockTimeout);
+                    luceneSession.ShardWriters.Add(new IndexWriter(shardDirectory, shardConfig));
+                    shardDirs.Add(shardDirectory);
+                }
+                ShardDirectories[indexName] = shardDirs;
+            }
+
             ContextSessions.Add(indexName, luceneSession);
             return luceneSession;
         }
@@ -97,30 +117,73 @@ public class IndexSessionManager : IIndexSessionManager
         }
     }
 
+    public void MergeShards(string indexName)
+    {
+        if (!ContextSessions.TryGetValue(indexName, out var session) || !session.IsMultiWriter)
+            return;
+
+        var shardDirectories = new List<Directory>(session.ShardWriters.Count);
+        foreach (var shardWriter in session.ShardWriters)
+        {
+            if (!shardWriter.IsClosed)
+            {
+                shardWriter.Commit();
+                shardDirectories.Add(shardWriter.Directory);
+                shardWriter.Dispose();
+            }
+        }
+
+        session.Writer.AddIndexes(shardDirectories.ToArray());
+        session.Writer.ForceMerge(1);
+
+        for (int i = 0; i < session.ShardWriters.Count; i++)
+        {
+            string shardName = GetShardIndexName(indexName, i);
+            _directoryManager.DisposeDirectory(shardName);
+        }
+
+        session.ShardWriters.Clear();
+
+        if (ShardDirectories.ContainsKey(indexName))
+            ShardDirectories.Remove(indexName);
+    }
+
     public void Commit(string indexName)
     {
-        if (ContextSessions.TryGetValue(indexName, out var context))
+        if (!ContextSessions.TryGetValue(indexName, out var context))
+            return;
+
+        foreach (var shardWriter in context.ShardWriters)
         {
-            if (context.Writer is { IsClosed: false } && context.Writer.HasUncommittedChanges())
-            {
-                context.Writer.Commit();
-                context.SearcherManager.MaybeRefresh();
-            }
+            if (!shardWriter.IsClosed && shardWriter.HasUncommittedChanges())
+                shardWriter.Commit();
+        }
+
+        if (context.Writer is { IsClosed: false } && context.Writer.HasUncommittedChanges())
+        {
+            context.Writer.Commit();
+            context.SearcherManager.MaybeRefresh();
         }
     }
 
     public void CloseSession(string indexName)
     {
-        if (ContextSessions.TryGetValue(indexName, out var context))
-        {
-            if (context.Writer is { IsClosed: false })
-            {
-                context.Writer.Commit();
-                context.Writer.Dispose();
-            }
+        if (!ContextSessions.TryGetValue(indexName, out var context))
+            return;
 
-            context.SearcherManager.Dispose();
-            ContextSessions.Remove(indexName);
+        if (context.IsMultiWriter)
+            MergeShards(indexName);
+
+        if (context.Writer is { IsClosed: false })
+        {
+            context.Writer.Commit();
+            context.Writer.Dispose();
         }
+
+        context.SearcherManager.Dispose();
+        ContextSessions.Remove(indexName);
     }
+
+    private static string GetShardIndexName(string indexName, int shardIndex)
+        => $"{indexName}_shard_{shardIndex}";
 }

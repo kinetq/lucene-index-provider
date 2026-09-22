@@ -12,4 +12,10 @@ public interface IIndexSessionManager
     void CloseSession(string indexName);
     void AddLock(string indexName);
     void ReleaseLock(string indexName);
+
+    /// <summary>
+    /// Merges all shard writers for the given index back into the main writer,
+    /// then disposes and removes the shard directories. No-op for single-writer sessions.
+    /// </summary>
+    void MergeShards(string indexName);
 }

@@ -435,7 +435,9 @@ namespace Lucene.Net.IndexProvider
         }
 
         /// <summary>
-        /// Allowing to store documents into indexes with no type
+        /// Allowing to store documents into indexes with no type.
+        /// When the session has multiple shard writers configured, documents are distributed
+        /// across shards in parallel and then merged back into the main index.
         /// </summary>
         /// <param name="contentItems"></param>
         /// <param name="indexName"></param>
@@ -452,17 +454,60 @@ namespace Lucene.Net.IndexProvider
             return Task.Run(() =>
             {
                 var luceneSession = _sessionManager.GetSessionFrom(indexName);
-                var writer = luceneSession.Writer;
-                foreach (var contentItem in contentItems)
+
+                if (luceneSession.IsMultiWriter)
                 {
-                    try
+                    var shardWriters = luceneSession.ShardWriters;
+                    int shardCount = shardWriters.Count;
+
+                    var shardBuckets = new List<object>[shardCount];
+                    for (int i = 0; i < shardCount; i++)
+                        shardBuckets[i] = new List<object>();
+
+                    for (int i = 0; i < contentItems.Count; i++)
+                        shardBuckets[i % shardCount].Add(contentItems[i]);
+
+                    var shardTasks = new Task[shardCount];
+                    for (int s = 0; s < shardCount; s++)
                     {
-                        var doc = _mapper.Map(contentItem);
-                        writer.AddDocument(doc);
+                        int shardIndex = s;
+                        var bucket = shardBuckets[shardIndex];
+                        var shardWriter = shardWriters[shardIndex];
+
+                        shardTasks[s] = Task.Run(() =>
+                        {
+                            foreach (var contentItem in bucket)
+                            {
+                                try
+                                {
+                                    var doc = _mapper.Map(contentItem);
+                                    shardWriter.AddDocument(doc);
+                                }
+                                catch (Exception e)
+                                {
+                                    _logger.LogError(e, "Could not add document to shard {ShardIndex} of index {IndexName}", shardIndex, indexName);
+                                }
+                            }
+                        });
                     }
-                    catch (Exception e)
+
+                    Task.WaitAll(shardTasks);
+                    _sessionManager.MergeShards(indexName);
+                }
+                else
+                {
+                    var writer = luceneSession.Writer;
+                    foreach (var contentItem in contentItems)
                     {
-                        _logger.LogError(e, $"Could not add document to index");
+                        try
+                        {
+                            var doc = _mapper.Map(contentItem);
+                            writer.AddDocument(doc);
+                        }
+                        catch (Exception e)
+                        {
+                            _logger.LogError(e, "Could not add document to index {IndexName}", indexName);
+                        }
                     }
                 }
             });
