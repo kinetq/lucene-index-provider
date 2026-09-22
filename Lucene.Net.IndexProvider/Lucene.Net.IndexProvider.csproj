@@ -5,8 +5,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Lucene.Net" Version="4.8.0-beta00017" />
-    <PackageReference Include="Lucene.Net.Analysis.Common" Version="4.8.0-beta00017" />
+    <PackageReference Include="Lucene.Net" Version="4.8.0-beta00018" />
+    <PackageReference Include="Lucene.Net.Analysis.Common" Version="4.8.0-beta00018" />
     <PackageReference Include="Lucene.Net.DocumentMapper" Version="1.0.18" />
     <PackageReference Include="Microsoft.AspNetCore.Http.Abstractions" Version="2.3.0" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.0" />
