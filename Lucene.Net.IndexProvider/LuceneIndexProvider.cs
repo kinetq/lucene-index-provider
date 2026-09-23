@@ -163,11 +163,10 @@ namespace Lucene.Net.IndexProvider
         {
             return Task.Run(async () =>
             {
+                string localPath = _localIndexPathFactory.GetLocalIndexPath();
+                _sessionManager.AddLock(index);
                 try
                 {
-                    string localPath = _localIndexPathFactory.GetLocalIndexPath();
-                    _sessionManager.AddLock(index);
-
                     _sessionManager.CloseSession(tempIndex);
                     _sessionManager.CloseSession(index);
 
@@ -177,21 +176,22 @@ namespace Lucene.Net.IndexProvider
                     if (!System.IO.Directory.Exists(tempIndexPath))
                     {
                         _logger.LogInformation("The index to be swapped {0} does not exist", index);
-                        _sessionManager.ReleaseLock(index);
                         return false;
                     }
 
                     await DeleteIndex(index);
                     System.IO.Directory.Move(tempIndexPath, indexPath);
 
-                    _sessionManager.ReleaseLock(index);
                     return true;
                 }
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, $"Could not swap index {index}");
-                    _sessionManager.ReleaseLock(index);
                     return false;
+                }
+                finally
+                {
+                    _sessionManager.ReleaseLock(index);
                 }
             });
         }

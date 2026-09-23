@@ -3,6 +3,7 @@ using Lucene.Net.Index;
 using Lucene.Net.IndexProvider.Interfaces;
 using Lucene.Net.IndexProvider.Models;
 using Lucene.Net.Search;
+using Lucene.Net.Store;
 using System;
 using System.Collections.Generic;
 using System.Threading;
@@ -65,7 +66,20 @@ public class IndexSessionManager : IIndexSessionManager
             var indexConfig = new IndexWriterConfig(config.LuceneVersion, analyzer);
             indexConfig.SetWriteLockTimeout(config.WriteLockTimeout);
 
-            var writer = new IndexWriter(directory, indexConfig);
+            IndexWriter writer;
+            try
+            {
+                writer = new IndexWriter(directory, indexConfig);
+            }
+            catch (LockObtainFailedException)
+            {
+                // A stale write.lock exists from a previous crash. Clear it and retry once.
+                directory.ClearLock(IndexWriter.WRITE_LOCK_NAME);
+                var retryConfig = new IndexWriterConfig(config.LuceneVersion, analyzer);
+                retryConfig.SetWriteLockTimeout(config.WriteLockTimeout);
+                writer = new IndexWriter(directory, retryConfig);
+            }
+
             var searchManager = new SearcherManager(writer, true, null);
             var luceneSession = new LuceneSession
             {
@@ -115,8 +129,14 @@ public class IndexSessionManager : IIndexSessionManager
         {
             if (context.Writer is { IsClosed: false })
             {
-                context.Writer.Commit();
-                context.Writer.Dispose();
+                try
+                {
+                    context.Writer.Commit();
+                }
+                finally
+                {
+                    context.Writer.Dispose();
+                }
             }
 
             context.SearcherManager.Dispose();

@@ -15,7 +15,7 @@
   </ItemGroup>
 
   <PropertyGroup>
-    <Version>1.0.43</Version>
+    <Version>1.0.44</Version>
     <RepositoryUrl>https://github.com/ssinno28/Lucene.Net.IndexProvider</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <Description>A simple service that helps to abstract common operations when interacting with lucene.net indexes.</Description>
